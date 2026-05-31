@@ -1,0 +1,16 @@
+# Dependency directories
+node_modules/
+
+# Local session profile containing secure Ring cookies and session state
+ring-browser-profile/
+
+# Downloaded Ring recordings
+downloads/
+
+# Environment configurations and local settings
+.env
+config.json
+
+# Operating System files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,18 @@
+{
+  "name": "ring-bulk-video-downloader",
+  "version": "1.0.0",
+  "description": "Bulk download Ring camera recordings via Puppeteer browser automation.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "puppeteer": "^22.10.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

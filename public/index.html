@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ring Camera Bulk Video Downloader</title>
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <!-- Background glowing ambient spheres -->
+    <div class="glow-sphere glow-sphere-1"></div>
+    <div class="glow-sphere glow-sphere-2"></div>
+
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <circle cx="12" cy="12" r="10" />
+                        <circle cx="12" cy="12" r="4" fill="currentColor" class="logo-pulse" />
+                        <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke-linecap="round" />
+                    </svg>
+                </div>
+                <h1>Ring <span>Bulk Downloader</span></h1>
+            </div>
+            <div class="status-bar" id="connectionStatusBar">
+                <span class="status-pill status-disconnected">
+                    <span class="pulse-dot"></span> Checking session...
+                </span>
+            </div>
+        </header>
+
+        <!-- ONBOARDING (LAUNCH AUTOMATED BROWSER) -->
+        <div id="authContainer" class="glass-panel main-panel auth-panel">
+            <div class="auth-form">
+                <h2>Automated Scraper Session</h2>
+                <p class="auth-subtext">To download videos without limits and comply with Ring's secure environment, we will launch an automated secure Chrome browser window on your desktop.</p>
+                
+                <!-- Onboarding Instructions -->
+                <div class="stepper-box">
+                    <div class="step-item">
+                        <div class="step-num">1</div>
+                        <div class="step-text">Click the <strong>Launch Secure Browser</strong> button below.</div>
+                    </div>
+                    <div class="step-item">
+                        <div class="step-num">2</div>
+                        <div class="step-text">Perform your official login (and 2FA if prompted) inside the secure Chrome window that pops up. We do <strong>not</strong> see or store your password.</div>
+                    </div>
+                    <div class="step-item">
+                        <div class="step-num">3</div>
+                        <div class="step-text">Once logged in and the activity page appears, this web console will unlock automatically! The browser profile persists for future zero-interaction runs.</div>
+                    </div>
+                </div>
+
+                <!-- Browser control dashboard -->
+                <div class="browser-status-card">
+                    <div class="browser-status-row">
+                        <span>Browser Status:</span>
+                        <span id="browserOpenBadge" class="status-badge badge-idle">CLOSED</span>
+                    </div>
+                    <div class="browser-status-row">
+                        <span>Login Status:</span>
+                        <span id="loginStatusBadge" class="status-badge badge-failed">NOT LOGGED IN</span>
+                    </div>
+                </div>
+
+                <div class="form-error" id="launchError"></div>
+
+                <button class="btn btn-primary btn-glow btn-large" id="launchBrowserBtn" onclick="launchBrowserSession()">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6m4-3h6v6m-11 5L21 3"/></svg>
+                    <span>Launch Secure Browser</span>
+                    <div class="spinner" id="launchSpinner" style="display: none;"></div>
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN DASHBOARD -->
+        <div id="dashboardContainer" class="main-dashboard" style="display: none;">
+            <nav class="dashboard-tabs">
+                <button class="dash-tab-btn active" onclick="switchDashboardTab('downloader')">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4m4-5 5 5 5-5m-5 5V3"/></svg>
+                    <span>Bulk Downloader</span>
+                </button>
+                <button class="dash-tab-btn" onclick="switchDashboardTab('library')">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>
+                    <span>Video Library</span>
+                </button>
+                <button class="btn btn-secondary" onclick="closeBrowserSession()" style="margin-left: auto;">
+                    <span>Close Browser Window</span>
+                </button>
+            </nav>
+
+            <!-- TAB 1: BULK DOWNLOADER -->
+            <div id="downloaderTab" class="dashboard-content grid-layout">
+                <!-- Left Control Panel -->
+                <div class="glass-panel control-panel">
+                    <h2>Configuration</h2>
+                    
+                    <!-- Camera Picker -->
+                    <div class="control-section">
+                        <h3>1. Select Cameras</h3>
+                        <div class="camera-grid" id="cameraListContainer">
+                            <!-- Populated programmatically -->
+                            <div class="loading-placeholder">Loading cameras...</div>
+                        </div>
+                    </div>
+
+                    <!-- Date Picker -->
+                    <div class="control-section">
+                        <h3>2. Time Range</h3>
+                        <div class="date-preset-grid">
+                            <button class="preset-btn active" onclick="setDatePreset('today', this)">Today</button>
+                            <button class="preset-btn" onclick="setDatePreset('7d', this)">Last 7 Days</button>
+                            <button class="preset-btn" onclick="setDatePreset('30d', this)">Last 30 Days</button>
+                            <button class="preset-btn" onclick="setDatePreset('custom', this)">Custom</button>
+                        </div>
+                        <div class="date-inputs" id="customDateContainer" style="display: none;">
+                            <div class="input-subgroup">
+                                <label for="startDate">From</label>
+                                <input type="datetime-local" id="startDate">
+                            </div>
+                            <div class="input-subgroup">
+                                <label for="endDate">To</label>
+                                <input type="datetime-local" id="endDate">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Event Kinds Filters -->
+                    <div class="control-section">
+                        <h3>3. Event Types</h3>
+                        <div class="checkbox-group">
+                            <label class="checkbox-card">
+                                <input type="checkbox" id="filterMotion" checked value="motion">
+                                <span class="checkbox-label">Motion Alerts</span>
+                            </label>
+                            <label class="checkbox-card">
+                                <input type="checkbox" id="filterDing" checked value="ding">
+                                <span class="checkbox-label">Doorbell Rings</span>
+                            </label>
+                            <label class="checkbox-card">
+                                <input type="checkbox" id="filterOnDemand" checked value="on_demand">
+                                <span class="checkbox-label">Live Views (On Demand)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary btn-glow btn-large" id="startDownloadBtn" onclick="startBulkDownload()">
+                        <span>Start Bulk Download</span>
+                    </button>
+                </div>
+
+                <!-- Right Progress Display -->
+                <div class="glass-panel progress-panel">
+                    <div class="panel-header">
+                        <h2>Download Console</h2>
+                        <span class="status-badge badge-idle" id="downloadStatusBadge">IDLE</span>
+                    </div>
+
+                    <!-- Idle screen -->
+                    <div class="progress-idle-screen" id="progressIdleScreen">
+                        <div class="idle-icon">
+                            <svg viewBox="0 0 24 24" width="60" height="60" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
+                                <path d="M12 8v8m-4-4h8"/>
+                            </svg>
+                        </div>
+                        <h3>Ready for Download</h3>
+                        <p>Configure your cameras, select a date range, and click "Start Bulk Download" to trigger automated retrieval.</p>
+                    </div>
+
+                    <!-- Active progress dashboard -->
+                    <div class="progress-active-screen" id="progressActiveScreen" style="display: none;">
+                        <div class="progress-stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Processed</div>
+                                <div class="stat-val" id="statProcessed">0 / 0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Successful</div>
+                                <div class="stat-val text-success" id="statSuccess">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Failed</div>
+                                <div class="stat-val text-danger" id="statFailed">0</div>
+                            </div>
+                        </div>
+
+                        <!-- Progress Bar -->
+                        <div class="progress-container">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="progressBarFill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-percentage" id="progressPercentText">0%</div>
+                        </div>
+
+                        <!-- Current download status -->
+                        <div class="current-download-details" id="currentDownloadDetailsContainer">
+                            <h4>Active Task:</h4>
+                            <div class="active-task-card">
+                                <div class="active-task-icon">
+                                    <div class="spinner"></div>
+                                </div>
+                                <div class="active-task-info">
+                                    <div class="active-task-camera" id="activeTaskCamera">Front Door</div>
+                                    <div class="active-task-meta" id="activeTaskMeta">Downloading Motion Event - 2026-05-31 12:00</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Queue logger -->
+                        <div class="console-logger">
+                            <h4>Download Log</h4>
+                            <div class="console-box" id="consoleLoggerBox">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+
+                        <button class="btn btn-danger" onclick="cancelActiveDownload()">Cancel Task</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: VIDEO LIBRARY -->
+            <div id="libraryTab" class="dashboard-content" style="display: none;">
+                <div class="glass-panel library-panel">
+                    <div class="library-header">
+                        <div>
+                            <h2>Local Video Library</h2>
+                            <p class="library-subtitle">Browse and playback all locally saved MP4 recordings inside your workspace downloads.</p>
+                        </div>
+                        <button class="btn btn-secondary" onclick="loadLibraryVideos()">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" class="sync-icon"><path d="M23 4v6h-6m-7.85 2a8.87 8.87 0 0 1 12.16-1.56L23 10M1 20v-6h6m7.85-2a8.87 8.87 0 0 1-12.16 1.56L1 14"/></svg>
+                            <span>Refresh Library</span>
+                        </button>
+                    </div>
+
+                    <div class="library-filters">
+                        <div class="input-subgroup">
+                            <label for="libraryCameraFilter">Camera</label>
+                            <select id="libraryCameraFilter" onchange="filterLibrary()">
+                                <option value="all">All Cameras</option>
+                            </select>
+                        </div>
+                        <div class="input-subgroup">
+                            <label for="libraryTypeFilter">Type</label>
+                            <select id="libraryTypeFilter" onchange="filterLibrary()">
+                                <option value="all">All Events</option>
+                                <option value="motion">Motion</option>
+                                <option value="ding">Doorbell Rings</option>
+                                <option value="on_demand">Live Views</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Library Grid -->
+                    <div class="library-grid" id="libraryGridContainer">
+                        <!-- Loaded dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- VIDEO PLAYER MODAL -->
+    <div class="modal" id="videoModal">
+        <div class="modal-backdrop" onclick="closeVideoPlayer()"></div>
+        <div class="modal-content glass-panel">
+            <button class="modal-close" onclick="closeVideoPlayer()">&times;</button>
+            <h3 id="videoModalTitle">Video Playback</h3>
+            <p id="videoModalSubtitle" class="video-subtitle">Front Door - 2026-05-31 12:00:00</p>
+            <div class="video-wrapper">
+                <video id="modalVideoPlayer" controls autoplay></video>
+            </div>
+            <div class="modal-footer">
+                <a href="#" id="modalDownloadBtn" class="btn btn-primary" download>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4m4-5 5 5 5-5m-5 5V3"/></svg>
+                    <span>Save to Computer</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script src="index.js"></script>
+</body>
+</html>
