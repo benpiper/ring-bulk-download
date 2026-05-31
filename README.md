@@ -83,3 +83,9 @@ Filenames are automatically formatted chronologically for easy sorting:
 Your privacy is our absolute priority:
 - **No Saved Passwords**: You never type your password or email into our console. Login occurs exclusively within the official Google Chrome frame directly communicating with `ring.com`.
 - **100% Local**: No video, session cookie, or credential ever leaves your physical machine.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
