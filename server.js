@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import dotenv from 'dotenv';
+import { exec, execFile } from 'child_process';
 
 puppeteer.use(StealthPlugin());
 dotenv.config();
@@ -46,6 +47,69 @@ let sseClients = [];
 // Helper to sanitize filename
 function sanitizeFilename(name) {
   return name.replace(/[^a-z0-9_-]/gi, '_').replace(/_+/g, '_');
+}
+
+// Extract a zip archive into destDir using the platform's native tooling so we
+// don't need an extra npm dependency. Falls back to `tar` (bsdtar handles zip
+// on macOS and Windows 10+) if the primary extractor is unavailable.
+function extractZip(zipPath, destDir) {
+  return new Promise((resolve, reject) => {
+    let cmd, args;
+    if (process.platform === 'win32') {
+      cmd = 'powershell';
+      args = ['-NoProfile', '-Command',
+        `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${destDir}" -Force`];
+    } else {
+      cmd = 'unzip';
+      args = ['-o', zipPath, '-d', destDir];
+    }
+    execFile(cmd, args, (err) => {
+      if (!err) return resolve();
+      // Fallback to tar for systems without the primary tool.
+      execFile('tar', ['-xf', zipPath, '-C', destDir], (err2) => {
+        if (err2) reject(err2);
+        else resolve();
+      });
+    });
+  });
+}
+
+// Recursively gather every .mp4 path under a directory (zip archives may nest
+// videos inside subfolders).
+function collectMp4sRecursive(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectMp4sRecursive(full));
+    else if (entry.name.toLowerCase().endsWith('.mp4')) out.push(full);
+  }
+  return out;
+}
+
+// Move a downloaded clip into its camera-specific folder with a structured,
+// chronologically-sortable name: <YYYY-MM-DD-HH-mm-ss>_<kind>_<uniqueId>.mp4
+function relocateMp4(srcPath, batchItems) {
+  const base = path.basename(srcPath).replace(/\.mp4$/i, '');
+  const separatorIdx = base.lastIndexOf(' - ');
+
+  let cameraName = 'General';
+  let timeStampStr = base;
+  if (separatorIdx !== -1) {
+    cameraName = base.slice(0, separatorIdx);
+    timeStampStr = base.slice(separatorIdx + 3);
+  }
+
+  const targetSubdir = path.join(DOWNLOADS_DIR, sanitizeFilename(cameraName));
+  if (!fs.existsSync(targetSubdir)) fs.mkdirSync(targetSubdir, { recursive: true });
+
+  const cleanTimeStr = timeStampStr.replace(/[:_T]/g, '-').slice(0, 19);
+  const matchItem = batchItems.find(x => x.cameraName === cameraName);
+  const kindStr = matchItem ? matchItem.kind : 'video';
+  const structuredFilename = `${cleanTimeStr}_${kindStr}_${Math.random().toString(36).substring(7)}.mp4`;
+  const destPath = path.join(targetSubdir, structuredFilename);
+
+  fs.renameSync(srcPath, destPath);
+  return destPath;
 }
 
 // Broadcast download state to SSE clients
@@ -102,11 +166,14 @@ app.post('/api/browser/launch', async (req, res) => {
   try {
     console.log('Launching browser with profile:', PROFILE_DIR);
     
-    // Automatically run headfully if display is available, or headlessly if headless is forced
-    const hasDisplay = !!process.env.DISPLAY;
-    
+    // Run with a visible window by default so the user can log in and clear
+    // 2FA. Only go headless when explicitly requested via HEADLESS=1 (e.g. an
+    // already-authenticated profile on a server with no display). Inferring
+    // this from DISPLAY broke macOS/Windows, where DISPLAY is never set.
+    const forceHeadless = process.env.HEADLESS === '1' || process.env.HEADLESS === 'true';
+
     browserInstance = await puppeteer.launch({
-      headless: !hasDisplay ? 'new' : false,
+      headless: forceHeadless,
       defaultViewport: { width: 1280, height: 800 },
       userDataDir: PROFILE_DIR,
       args: [
@@ -133,13 +200,20 @@ app.post('/api/browser/launch', async (req, res) => {
       timeout: 60000
     });
 
+    // Give the single-page app a few seconds to hydrate before checking auth,
+    // otherwise a returning user with valid cookies is reported as logged out.
+    await pageInstance.waitForSelector(
+      'button[data-testid="manage-events__select-multiple"], button[data-testid="history-header__manage-button"], [role="checkbox"]',
+      { timeout: 8000 }
+    ).catch(() => {});
+
     // Check if we logged in instantly due to persistent cookies
     const loggedIn = await checkLoginStatus();
 
-    return res.json({ 
-      status: 'launched', 
+    return res.json({
+      status: 'launched',
       authenticated: loggedIn,
-      displayUsed: hasDisplay
+      headless: forceHeadless
     });
   } catch (err) {
     console.error('Failed to launch browser:', err);
@@ -353,10 +427,10 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         
         const lastCardText = cards[cards.length - 1].innerText || '';
         const oldestDate = parseCardDate(lastCardText);
-        
+
         return {
           count: cards.length,
-          oldestTime: oldestDate.getTime()
+          oldestTime: oldestDate ? oldestDate.getTime() : null
         };
       }, startDate.getTime());
 
@@ -367,9 +441,14 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         continue;
       }
 
-      console.log(`Loaded ${stats.count} events. Oldest event date loaded: ${new Date(stats.oldestTime).toISOString()}`);
+      const oldestLabel = stats.oldestTime ? new Date(stats.oldestTime).toISOString() : 'unknown';
+      console.log(`Loaded ${stats.count} events. Oldest event date loaded: ${oldestLabel}`);
 
-      if (stats.oldestTime < startDate.getTime() || scrollCount > 60) {
+      if (scrollCount > 60) {
+        reachedEnd = true;
+        break;
+      }
+      if (stats.oldestTime !== null && stats.oldestTime < startDate.getTime()) {
         reachedEnd = true;
         break;
       }
@@ -424,8 +503,8 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
             return d;
           }
         }
-        
-        return now;
+
+        return null;
       }
 
       const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
@@ -438,15 +517,17 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         const cameraName = lines[0] || 'Unknown Camera';
         const typeText = lines[1] || 'Alert';
         const eventDate = parseCardDate(text);
-        
+
         let kind = 'motion';
         if (typeText.includes('Ring') || typeText.includes('Ding') || typeText.includes('Doorbell')) kind = 'ding';
         if (typeText.includes('Live') || typeText.includes('Demand')) kind = 'on_demand';
 
-        // Filtering
+        // Filtering. Cards whose date could not be parsed are excluded rather
+        // than being stamped with the current time.
         const matchesCamera = cameraNames.length === 0 || cameraNames.includes(cameraName);
         const matchesType = eventKinds.length === 0 || eventKinds.includes(kind);
-        const matchesDate = eventDate.getTime() >= startMs && eventDate.getTime() <= endMs;
+        const matchesDate = eventDate !== null &&
+          eventDate.getTime() >= startMs && eventDate.getTime() <= endMs;
 
         if (matchesCamera && matchesType && matchesDate) {
           list.push({
@@ -454,7 +535,9 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
             cameraName,
             kind,
             createdAt: eventDate.toISOString(),
-            // Generate a random stable key to track downloads
+            // Normalized card text used to re-locate this exact card at click
+            // time, since positional indices drift as the list re-renders.
+            signature: text.replace(/\s+/g, ' ').trim(),
             dingId: `dom-${index}-${eventDate.getTime()}`
           });
         }
@@ -494,14 +577,16 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
 
       console.log(`Processing batch download: items ${batchStart} to ${batchEnd}`);
 
-      // We need to click checkboxes corresponding to these batch items
-      const indexesToClick = batchItems.map(item => item.domIndex);
+      // Match each batch item by its captured text signature at click time
+      // rather than trusting positional indices, which drift as the virtualized
+      // list re-renders during scrolling.
+      const batchSignatures = batchItems.map(item => item.signature);
 
       // Reset any existing selections first
       await pageInstance.evaluate(() => {
         const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
         cards.forEach(card => {
-          const isChecked = card.getAttribute('aria-checked') === 'true' || 
+          const isChecked = card.getAttribute('aria-checked') === 'true' ||
                             card.querySelector('input[type="checkbox"]')?.checked;
           if (isChecked) card.click();
         });
@@ -509,17 +594,32 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
 
       await new Promise(r => setTimeout(r, 500));
 
-      // Click checkboxes of target items in batch
-      await pageInstance.evaluate((indices) => {
+      // Click the checkbox of each target event by matching its signature.
+      // Returns how many were actually found and selected.
+      const selectedCount = await pageInstance.evaluate((signatures) => {
+        const norm = (t) => (t || '').replace(/\s+/g, ' ').trim();
         const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
-        indices.forEach(idx => {
-          if (cards[idx]) {
-            const isChecked = cards[idx].getAttribute('aria-checked') === 'true' || 
-                              cards[idx].querySelector('input[type="checkbox"]')?.checked;
-            if (!isChecked) cards[idx].click();
+        const used = new Set();
+        let clicked = 0;
+        for (const sig of signatures) {
+          for (let i = 0; i < cards.length; i++) {
+            if (used.has(i)) continue;
+            if (norm(cards[i].innerText) === sig) {
+              used.add(i);
+              const isChecked = cards[i].getAttribute('aria-checked') === 'true' ||
+                                cards[i].querySelector('input[type="checkbox"]')?.checked;
+              if (!isChecked) cards[i].click();
+              clicked++;
+              break;
+            }
           }
-        });
-      }, indexesToClick);
+        }
+        return clicked;
+      }, batchSignatures);
+
+      if (selectedCount < batchItems.length) {
+        console.log(`Warning: only ${selectedCount}/${batchItems.length} events in this batch were visible in the list and could be selected.`);
+      }
 
       await new Promise(r => setTimeout(r, 1000));
 
@@ -530,8 +630,13 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
       });
       broadcastState();
 
-      // Read current MP4 files in downloads folder to detect new additions
-      const initialFiles = new Set(fs.readdirSync(DOWNLOADS_DIR).filter(f => f.endsWith('.mp4')));
+      // Snapshot existing files (any type) so we can detect new downloads.
+      // Ring may deliver the selection as a single .zip archive or as
+      // individual .mp4 files, so we watch for both.
+      const initialFiles = new Set(fs.readdirSync(DOWNLOADS_DIR));
+
+      downloadState.currentEvent = downloadState.queue[batchStart] || null;
+      broadcastState();
 
       // Click the official DOWNLOAD button
       console.log('Clicking the official Bulk Download button...');
@@ -549,102 +654,101 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         throw new Error('Manage Download button not found on Ring dashboard');
       }
 
-      // Monitor downloads directory for new files
-      const expectedCount = batchItems.length;
-      let downloadedCount = 0;
+      // Wait for the download to land. A finished download has no in-progress
+      // marker (.crdownload/.part/.tmp) and appears as a new terminal file.
+      const expectedCount = selectedCount > 0 ? selectedCount : batchItems.length;
       let waitSeconds = 0;
-      const timeoutLimit = 90; // 90 seconds limit
+      const timeoutLimit = 180; // large zip archives can take a while
+      let newFiles = [];
 
-      console.log(`Waiting for ${expectedCount} files to complete downloading...`);
+      console.log(`Waiting for download of ~${expectedCount} clip(s) to complete...`);
 
-      while (downloadedCount < expectedCount && waitSeconds < timeoutLimit && !signal.aborted) {
+      while (waitSeconds < timeoutLimit && !signal.aborted) {
         await new Promise(r => setTimeout(r, 1500));
         waitSeconds += 1.5;
-
-        // Scan directory
-        const files = fs.readdirSync(DOWNLOADS_DIR);
-        const mp4Files = files.filter(f => f.endsWith('.mp4'));
-        const newMp4s = mp4Files.filter(f => !initialFiles.has(f));
-
-        downloadedCount = newMp4s.length;
-
-        // Update progress dynamically
-        batchItems.forEach((item, localIdx) => {
-          const globalIdx = batchStart + localIdx;
-          if (localIdx < downloadedCount) {
-            downloadState.queue[globalIdx].status = 'success';
-          }
-        });
-        
-        // Formulate temporary active status
-        if (downloadedCount < expectedCount) {
-          const currentDownloadingItem = batchItems[Math.min(downloadedCount, expectedCount - 1)];
-          const globalIdx = batchStart + Math.min(downloadedCount, expectedCount - 1);
-          downloadState.currentEvent = downloadState.queue[globalIdx];
-        }
-        
         broadcastState();
 
-        // Organize and relocate any completely finished new files immediately!
-        for (const file of newMp4s) {
-          const srcPath = path.join(DOWNLOADS_DIR, file);
-          
-          // Parse file components: Usually named like "Front Door - 2026-05-31T20_00_00.mp4"
-          const parsed = file.replace('.mp4', '');
-          const separatorIdx = parsed.lastIndexOf(' - ');
-          
-          let cameraName = 'General';
-          let timeStampStr = parsed;
+        const current = fs.readdirSync(DOWNLOADS_DIR);
+        const inProgress = current.some(f =>
+          f.endsWith('.crdownload') || f.endsWith('.part') || f.endsWith('.tmp'));
+        const candidates = current.filter(f => !initialFiles.has(f) &&
+          !f.endsWith('.crdownload') && !f.endsWith('.part') && !f.endsWith('.tmp'));
 
-          if (separatorIdx !== -1) {
-            cameraName = parsed.slice(0, separatorIdx);
-            timeStampStr = parsed.slice(separatorIdx + 3);
-          }
-
-          const targetSubdir = path.join(DOWNLOADS_DIR, sanitizeFilename(cameraName));
-          if (!fs.existsSync(targetSubdir)) {
-            fs.mkdirSync(targetSubdir, { recursive: true });
-          }
-
-          // Formulate structured file format: <YYYY-MM-DD-HH-mm-ss>_<kind>_<dingId>.mp4
-          const cleanTimeStr = timeStampStr.replace(/[:_T]/g, '-').slice(0, 19);
-          // Try to lookup matches in batchItems to extract correct event kind
-          const matchItem = batchItems.find(x => x.cameraName === cameraName);
-          const kindStr = matchItem ? matchItem.kind : 'video';
-          
-          const structuredFilename = `${cleanTimeStr}_${kindStr}_${Math.random().toString(36).substring(7)}.mp4`;
-          const destPath = path.join(targetSubdir, structuredFilename);
-
-          // Relocate
-          try {
-            fs.renameSync(srcPath, destPath);
-            // Add to initial files so we don't process it again
-            initialFiles.add(file);
-          } catch (e) {
-            // If locked or in use, we'll try again next tick
-          }
+        if (!inProgress && candidates.length > 0) {
+          newFiles = candidates;
+          break;
         }
       }
 
-      // Mark any remaining items in batch
+      // Collect every mp4 we received, extracting any zip archives first.
+      const collectedMp4s = [];
+      for (const file of newFiles) {
+        const srcPath = path.join(DOWNLOADS_DIR, file);
+        initialFiles.add(file);
+
+        if (file.toLowerCase().endsWith('.zip')) {
+          const extractDir = path.join(DOWNLOADS_DIR, `__extract_${Date.now()}`);
+          try {
+            fs.mkdirSync(extractDir, { recursive: true });
+            await extractZip(srcPath, extractDir);
+            collectedMp4s.push(...collectMp4sRecursive(extractDir));
+          } catch (e) {
+            console.error(`Failed to extract archive ${file}:`, e.message);
+          }
+        } else if (file.toLowerCase().endsWith('.mp4')) {
+          collectedMp4s.push(srcPath);
+        }
+      }
+
+      // Relocate each clip into its camera-specific folder.
+      let downloadedCount = 0;
+      for (const mp4Path of collectedMp4s) {
+        try {
+          relocateMp4(mp4Path, batchItems);
+          downloadedCount++;
+        } catch (e) {
+          console.error('Failed to relocate clip:', e.message);
+        }
+      }
+
+      // Clean up the original zip archives and any extraction temp dirs.
+      for (const file of newFiles) {
+        if (file.toLowerCase().endsWith('.zip')) {
+          fs.rmSync(path.join(DOWNLOADS_DIR, file), { force: true });
+        }
+      }
+      for (const entry of fs.readdirSync(DOWNLOADS_DIR)) {
+        if (entry.startsWith('__extract_')) {
+          fs.rmSync(path.join(DOWNLOADS_DIR, entry), { recursive: true, force: true });
+        }
+      }
+
+      // Mark queue items based on how many clips actually arrived rather than
+      // assuming the whole batch succeeded. Matching is order-based: Ring's
+      // archive does not expose a reliable per-event id, so the first N items
+      // are marked successful and the remainder failed with a reason.
+      const timedOut = newFiles.length === 0 && waitSeconds >= timeoutLimit;
       batchItems.forEach((_, localIdx) => {
         const globalIdx = batchStart + localIdx;
         const qItem = downloadState.queue[globalIdx];
-        if (qItem.status === 'downloading') {
-          if (waitSeconds >= timeoutLimit) {
-            qItem.status = 'failed';
-            qItem.error = 'Download timed out';
-            downloadState.failedEvents++;
-          } else {
-            qItem.status = 'success';
-            downloadState.successfulEvents++;
-          }
-        } else if (qItem.status === 'success') {
+        if (localIdx < downloadedCount) {
+          qItem.status = 'success';
           downloadState.successfulEvents++;
+        } else {
+          qItem.status = 'failed';
+          if (timedOut) {
+            qItem.error = 'Download timed out';
+          } else if (selectedCount < batchItems.length && localIdx >= selectedCount) {
+            qItem.error = 'Event not visible in list';
+          } else {
+            qItem.error = 'Clip not found in download';
+          }
+          downloadState.failedEvents++;
         }
         downloadState.processedEvents++;
       });
 
+      downloadState.currentEvent = null;
       broadcastState();
       
       // Pause slightly between batches
@@ -750,8 +854,6 @@ app.get('/api/videos/play/:camera/:filename', (req, res) => {
 
   res.sendFile(filePath);
 });
-
-import { exec } from 'child_process';
 
 // Start express server
 app.listen(PORT, () => {
