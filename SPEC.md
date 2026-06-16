@@ -21,3 +21,7 @@ As a user, I want:
 https://developer.amazon.com/docs/ring/api-documentation.html#overview
 
 https://gist.githubusercontent.com/vogler/5bb22703e2dc95f6bc4eb0c35abcd600/raw/aa768bc5329bdb8be8a5f79600da3e9f9b4d24a6/ring-download-all-videos.js
+
+## Constraints and safeguards
+
+Guard against accidental deletion of Ring videos. Do not delete Ring videos ever. 
