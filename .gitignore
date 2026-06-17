@@ -14,3 +14,21 @@ config.json
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+*.wmv
+*.m4v
+*.3gp
+*.ogv
+*.ts
+*.mts
+*.m2ts
+
+# Compressed files
+*.zip
