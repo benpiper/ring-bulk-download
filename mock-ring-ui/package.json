@@ -1,0 +1,14 @@
+{
+  "name": "mock-ring-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mock Ring Activity History page for testing the bulk downloader's Puppeteer automation",
+  "type": "module",
+  "scripts": {
+    "start": "node mock-server.js",
+    "dev": "node mock-server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

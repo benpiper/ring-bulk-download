@@ -194,8 +194,12 @@ app.post('/api/browser/launch', async (req, res) => {
       downloadPath: DOWNLOADS_DIR
     });
 
-    console.log('Navigating to Ring Activity History...');
-    await pageInstance.goto('https://account.ring.com/account/activity-history', {
+    const targetUrl = req.body.useMock 
+      ? 'http://localhost:8089/account/activity-history' 
+      : 'https://account.ring.com/account/activity-history';
+
+    console.log(`Navigating to ${targetUrl}...`);
+    await pageInstance.goto(targetUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
@@ -559,15 +563,18 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         }
       });
 
-      return list;
+      return { list, debugInfo: cards.map(c => c.innerText.replace(/\n/g, ' | ')) };
     }, cameraNames, eventKinds, startDate.getTime(), endDate.getTime());
 
-    // Sort chronologically (oldest first)
-    domEvents.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    console.log('DOM cards text:', domEvents.debugInfo);
+    const parsedList = domEvents.list;
 
-    downloadState.totalEvents = domEvents.length;
-    downloadState.status = domEvents.length > 0 ? 'downloading' : 'completed';
-    downloadState.queue = domEvents.map(item => ({
+    // Sort chronologically (oldest first)
+    parsedList.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    downloadState.totalEvents = parsedList.length;
+    downloadState.status = parsedList.length > 0 ? 'downloading' : 'completed';
+    downloadState.queue = parsedList.map(item => ({
       dingId: item.dingId,
       cameraName: item.cameraName,
       createdAt: item.createdAt,
@@ -577,16 +584,16 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
     }));
     broadcastState();
 
-    if (domEvents.length === 0) {
+    if (parsedList.length === 0) {
       return;
     }
 
     // Step 3: Select and download one event at a time by position
-    for (let i = 0; i < domEvents.length; i++) {
+    for (let i = 0; i < parsedList.length; i++) {
       if (signal.aborted) break;
 
-      const item = domEvents[i];
-      console.log(`Downloading event ${i + 1}/${domEvents.length}: ${item.cameraName}`);
+      const item = parsedList[i];
+      console.log(`Downloading event ${i + 1}/${parsedList.length}: ${item.cameraName}`);
 
       // Scroll to bottom so all loaded cards stay rendered
       await pageInstance.evaluate(() => window.scrollTo(0, document.body.scrollHeight));

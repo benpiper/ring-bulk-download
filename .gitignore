@@ -9,6 +9,7 @@ downloads/
 
 # Environment configurations and local settings
 .env
+.env.*
 config.json
 
 # Operating System files

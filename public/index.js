@@ -101,7 +101,12 @@ async function launchBrowserSession() {
     btn.disabled = true;
 
     try {
-        const res = await fetch('/api/browser/launch', { method: 'POST' });
+        const useMock = document.getElementById('useMockEnv') ? document.getElementById('useMockEnv').checked : false;
+        const res = await fetch('/api/browser/launch', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ useMock })
+        });
         const data = await res.json();
 
         if (!res.ok) throw new Error(data.error || 'Failed to start browser');
