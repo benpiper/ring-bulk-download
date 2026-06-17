@@ -24,7 +24,7 @@ let browserInstance = null;
 let pageInstance = null;
 let abortController = null;
 
-const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(__dirname, 'downloads');
 const PROFILE_DIR = path.join(__dirname, 'ring-browser-profile');
 
 // Ensure directories exist
@@ -257,8 +257,24 @@ app.get('/api/cameras', async (req, res) => {
     }
 
     console.log('Discovering active cameras from activity history DOM...');
-    
-    // Extract camera names from the first few loaded events
+
+    // Enter manage mode so event cards render with [role=checkbox]
+    await pageInstance.evaluate(() => {
+      const btn = document.querySelector('button[data-testid="manage-events__select-multiple"]') ||
+                  document.querySelector('button[data-testid="history-header__manage-button"]');
+      if (btn && !document.querySelector('button[data-testid="manage-events__download"]')) {
+        btn.click();
+      }
+    });
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Scroll down a few times to load events into the DOM
+    for (let s = 0; s < 3; s++) {
+      await pageInstance.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    // Extract camera names from the loaded events
     const cameraNames = await pageInstance.evaluate(() => {
       const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
       const names = new Set();
@@ -565,103 +581,81 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
       return;
     }
 
-    // Step 3: Run selection and download batches sequentially (150 max)
-    const totalCount = domEvents.length;
-    const batchSize = 150;
-
-    for (let batchStart = 0; batchStart < totalCount; batchStart += batchSize) {
+    // Step 3: Select and download one event at a time by position
+    for (let i = 0; i < domEvents.length; i++) {
       if (signal.aborted) break;
 
-      const batchEnd = Math.min(batchStart + batchSize, totalCount);
-      const batchItems = domEvents.slice(batchStart, batchEnd);
+      const item = domEvents[i];
+      console.log(`Downloading event ${i + 1}/${domEvents.length}: ${item.cameraName}`);
 
-      console.log(`Processing batch download: items ${batchStart} to ${batchEnd}`);
+      // Scroll to bottom so all loaded cards stay rendered
+      await pageInstance.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise(r => setTimeout(r, 1500));
 
-      // Match each batch item by its captured text signature at click time
-      // rather than trusting positional indices, which drift as the virtualized
-      // list re-renders during scrolling.
-      const batchSignatures = batchItems.map(item => item.signature);
-
-      // Reset any existing selections first
-      await pageInstance.evaluate(() => {
+      // Select this card by its original DOM index
+      const selected = await pageInstance.evaluate((idx) => {
         const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
-        cards.forEach(card => {
-          const isChecked = card.getAttribute('aria-checked') === 'true' ||
-                            card.querySelector('input[type="checkbox"]')?.checked;
-          if (isChecked) card.click();
-        });
-      });
+        const card = cards[idx];
+        if (!card) return false;
+        const checked = card.getAttribute('aria-checked') === 'true' ||
+                        card.querySelector('input[type="checkbox"]')?.checked;
+        if (!checked) card.click();
+        return true;
+      }, item.domIndex);
+
+      if (!selected) {
+        console.log(`Warning: card ${item.domIndex} not in DOM, skipping`);
+        downloadState.queue[i].status = 'failed';
+        downloadState.queue[i].error = 'Not visible in list';
+        downloadState.failedEvents++;
+        downloadState.processedEvents++;
+        broadcastState();
+        continue;
+      }
 
       await new Promise(r => setTimeout(r, 500));
 
-      // Click the checkbox of each target event by matching its signature.
-      // Returns how many were actually found and selected.
-      const selectedCount = await pageInstance.evaluate((signatures) => {
-        const norm = (t) => (t || '').replace(/\s+/g, ' ').trim();
-        const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
-        const used = new Set();
-        let clicked = 0;
-        for (const sig of signatures) {
-          for (let i = 0; i < cards.length; i++) {
-            if (used.has(i)) continue;
-            if (norm(cards[i].innerText) === sig) {
-              used.add(i);
-              const isChecked = cards[i].getAttribute('aria-checked') === 'true' ||
-                                cards[i].querySelector('input[type="checkbox"]')?.checked;
-              if (!isChecked) cards[i].click();
-              clicked++;
-              break;
-            }
-          }
-        }
-        return clicked;
-      }, batchSignatures);
-
-      if (selectedCount < batchItems.length) {
-        console.log(`Warning: only ${selectedCount}/${batchItems.length} events in this batch were visible in the list and could be selected.`);
-      }
-
-      await new Promise(r => setTimeout(r, 1000));
-
-      // Update queue items to 'downloading' state
-      batchItems.forEach((_, localIdx) => {
-        const globalIdx = batchStart + localIdx;
-        downloadState.queue[globalIdx].status = 'downloading';
-      });
+      downloadState.queue[i].status = 'downloading';
+      downloadState.currentEvent = downloadState.queue[i];
       broadcastState();
 
-      // Snapshot existing files (any type) so we can detect new downloads.
-      // Ring may deliver the selection as a single .zip archive or as
-      // individual .mp4 files, so we watch for both.
       const initialFiles = new Set(fs.readdirSync(DOWNLOADS_DIR));
 
-      downloadState.currentEvent = downloadState.queue[batchStart] || null;
-      broadcastState();
-
-      // Click the official DOWNLOAD button
-      console.log('Clicking the official Bulk Download button...');
+      console.log('Clicking download button...');
       const downloadTriggered = await pageInstance.evaluate(() => {
         const btn = document.querySelector('button[data-testid="manage-events__download"]') ||
                     document.querySelector('.bulk-download-button');
-        if (btn) {
-          btn.click();
-          return true;
-        }
+        if (btn) { btn.click(); return true; }
         return false;
       });
 
       if (!downloadTriggered) {
-        throw new Error('Manage Download button not found on Ring dashboard');
+        console.log('Download button not found, skipping');
+        downloadState.queue[i].status = 'failed';
+        downloadState.queue[i].error = 'Download button not found';
+        downloadState.failedEvents++;
+        downloadState.processedEvents++;
+        downloadState.currentEvent = null;
+        broadcastState();
+        // Deselect before continuing
+        await pageInstance.evaluate((idx) => {
+          const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
+          const card = cards[idx];
+          if (card) {
+            const checked = card.getAttribute('aria-checked') === 'true' ||
+                            card.querySelector('input[type="checkbox"]')?.checked;
+            if (checked) card.click();
+          }
+        }, item.domIndex);
+        continue;
       }
 
-      // Wait for the download to land. A finished download has no in-progress
-      // marker (.crdownload/.part/.tmp) and appears as a new terminal file.
-      const expectedCount = selectedCount > 0 ? selectedCount : batchItems.length;
+      // Wait for the file to land
       let waitSeconds = 0;
-      const timeoutLimit = 180; // large zip archives can take a while
+      const timeoutLimit = 180;
       let newFiles = [];
 
-      console.log(`Waiting for download of ~${expectedCount} clip(s) to complete...`);
+      console.log('Waiting for download to complete...');
 
       while (waitSeconds < timeoutLimit && !signal.aborted) {
         await new Promise(r => setTimeout(r, 1500));
@@ -680,7 +674,7 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         }
       }
 
-      // Collect every mp4 we received, extracting any zip archives first.
+      // Extract zips and collect mp4s
       const collectedMp4s = [];
       for (const file of newFiles) {
         const srcPath = path.join(DOWNLOADS_DIR, file);
@@ -700,18 +694,18 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         }
       }
 
-      // Relocate each clip into its camera-specific folder.
-      let downloadedCount = 0;
+      // Relocate into camera folder
+      let downloaded = false;
       for (const mp4Path of collectedMp4s) {
         try {
-          relocateMp4(mp4Path, batchItems);
-          downloadedCount++;
+          relocateMp4(mp4Path, [item]);
+          downloaded = true;
         } catch (e) {
           console.error('Failed to relocate clip:', e.message);
         }
       }
 
-      // Clean up the original zip archives and any extraction temp dirs.
+      // Clean up zips and temp dirs
       for (const file of newFiles) {
         if (file.toLowerCase().endsWith('.zip')) {
           fs.rmSync(path.join(DOWNLOADS_DIR, file), { force: true });
@@ -723,36 +717,31 @@ async function runBrowserScraperQueue(cameraNames, startDate, endDate, eventKind
         }
       }
 
-      // Mark queue items based on how many clips actually arrived rather than
-      // assuming the whole batch succeeded. Matching is order-based: Ring's
-      // archive does not expose a reliable per-event id, so the first N items
-      // are marked successful and the remainder failed with a reason.
       const timedOut = newFiles.length === 0 && waitSeconds >= timeoutLimit;
-      batchItems.forEach((_, localIdx) => {
-        const globalIdx = batchStart + localIdx;
-        const qItem = downloadState.queue[globalIdx];
-        if (localIdx < downloadedCount) {
-          qItem.status = 'success';
-          downloadState.successfulEvents++;
-        } else {
-          qItem.status = 'failed';
-          if (timedOut) {
-            qItem.error = 'Download timed out';
-          } else if (selectedCount < batchItems.length && localIdx >= selectedCount) {
-            qItem.error = 'Event not visible in list';
-          } else {
-            qItem.error = 'Clip not found in download';
-          }
-          downloadState.failedEvents++;
-        }
-        downloadState.processedEvents++;
-      });
-
+      if (downloaded) {
+        downloadState.queue[i].status = 'success';
+        downloadState.successfulEvents++;
+      } else {
+        downloadState.queue[i].status = 'failed';
+        downloadState.queue[i].error = timedOut ? 'Download timed out' : 'Clip not found in download';
+        downloadState.failedEvents++;
+      }
+      downloadState.processedEvents++;
       downloadState.currentEvent = null;
       broadcastState();
-      
-      // Pause slightly between batches
-      await new Promise(r => setTimeout(r, 2000));
+
+      // Deselect this card before moving to the next
+      await pageInstance.evaluate((idx) => {
+        const cards = Array.from(document.querySelectorAll('[role=checkbox]'));
+        const card = cards[idx];
+        if (card) {
+          const checked = card.getAttribute('aria-checked') === 'true' ||
+                          card.querySelector('input[type="checkbox"]')?.checked;
+          if (checked) card.click();
+        }
+      }, item.domIndex);
+
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     if (signal.aborted) {
